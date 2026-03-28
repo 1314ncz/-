@@ -1355,7 +1355,6 @@ local function setYLockValue(value)
     output("Y锁定高度设为 " .. v, true)
     updateUI()
 end
-
 -- ========== 狂铠（自在极意） ==========
 local function toggleKuangkai(state)
     if state == nil then
@@ -1403,43 +1402,39 @@ local function toggleKuangkai(state)
                 end
 
                 updateCharacterRefs()
-                if not character.rootPart then
-                    task.wait(0.5)
-                    goto continue
+                if character.rootPart then
+                    local targetPos = targetPart.Position
+
+                    local offsetX = math.cos(angle) * distance
+                    local offsetZ = math.sin(angle) * distance
+                    local newPos = Vector3.new(
+                        targetPos.X + offsetX,
+                        targetPos.Y + 2,
+                        targetPos.Z + offsetZ
+                    )
+
+                    character.rootPart.CFrame = CFrame.lookAt(newPos, targetPos)
+                    character.rootPart.Velocity = Vector3.new(0,0,0)
+                    if not character.floating then setFloating(true) end
+
+                    local cam = workspace.CurrentCamera
+                    cam.CameraType = Enum.CameraType.Scriptable
+                    local camDistance = 20
+                    local camHeight = 8
+                    local camPos = targetPos + Vector3.new(math.cos(angle) * camDistance, camHeight, math.sin(angle) * camDistance)
+                    cam.CFrame = CFrame.lookAt(camPos, targetPos)
+
+                    angle = angle + speed
+
+                    if angle % (math.pi) < speed then
+                        distance = (distance == 14) and 20 or 14
+                    end
+
+                    if angle > 2 * math.pi then
+                        angle = angle - 2 * math.pi
+                    end
                 end
-
-                local targetPos = targetPart.Position
-
-                local offsetX = math.cos(angle) * distance
-                local offsetZ = math.sin(angle) * distance
-                local newPos = Vector3.new(
-                    targetPos.X + offsetX,
-                    targetPos.Y + 2,
-                    targetPos.Z + offsetZ
-                )
-
-                character.rootPart.CFrame = CFrame.lookAt(newPos, targetPos)
-                character.rootPart.Velocity = Vector3.new(0,0,0)
-                if not character.floating then setFloating(true) end
-
-                local cam = workspace.CurrentCamera
-                cam.CameraType = Enum.CameraType.Scriptable
-                local camDistance = 20
-                local camHeight = 8
-                local camPos = targetPos + Vector3.new(math.cos(angle) * camDistance, camHeight, math.sin(angle) * camDistance)
-                cam.CFrame = CFrame.lookAt(camPos, targetPos)
-
-                angle = angle + speed
-
-                if angle % (math.pi) < speed then
-                    distance = (distance == 14) and 20 or 14
-                end
-
-                if angle > 2 * math.pi then
-                    angle = angle - 2 * math.pi
-                end
-
-                ::continue::
+                
                 task.wait(0.05)
             end
 
