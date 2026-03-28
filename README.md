@@ -1,4 +1,4 @@
-# --- Roblox qdsdz 机器人
+     -- Roblox qdsdz 机器人
 -- 功能：穿墙、伤害免疫、悬浮、旋转、范围、传送甩飞、无限跳跃、跟随间隔、头顶高度跟随（可调）
 --       格挡循环（不受伤害影响）、M1循环、M2循环、自动自杀（血量≤5时重生）
 --       手动自杀按钮（立即重置角色）
@@ -10,21 +10,12 @@
 -- 自定义UI背景：添加图片 ID: 136832107950374
 -- 自定义菜单按钮：纯图片，无文字
 -- 加载动画：添加图片 ID: 127495408038944 并显示"欢迎使用"（修复版）
--- 远程控制：授权系统，支持使用数字编号快速授权
--- 修复编号错误问题：确保 getPlayerNameByIndex 始终刷新玩家列表
+-- 修复穿墙功能：永久生效，永不打断，死亡重生后自动恢复
+-- 已删除：所有远程控制授权功能
 
 local PASSWORD = "qdsdz"
-local DEFAULT_USER = "qdsdz"
 local bot_active = false
-local authorized_users = { [DEFAULT_USER] = true }  -- 默认授权用户
 local current_operator = nil
-
--- 远程控制设置
-local remote_control_enabled = true  -- 是否启用远程控制
-local remote_control_password = ""  -- 远程控制密码（可选，如果为空则不需要密码）
-
--- 授权玩家列表（用于远程控制）
-local authorized_remote_users = {}  -- 存储被授权执行远程命令的玩家
 
 -- 常量
 local MIN_HEIGHT = -500
@@ -46,6 +37,7 @@ local character = {
     lastHealth = nil,
     smooth_follow = true,
     wallHackActive = false,
+    characterAddedConnection = nil,  -- 角色重生监听器引用
     -- 旋转
     spin_enabled = false,
     spin_speed = 100,
@@ -96,7 +88,7 @@ local followLoop = nil
 local lastPlayerList = {}
 local heartbeatConnection = nil
 local jumpConnection = nil
-local immunityMaintainConnection = nil
+local immunityMaintainConnection = nil  -- 穿墙维护连接
 local blockLoop = nil
 local m1Loop = nil
 local m2Loop = nil
@@ -152,15 +144,11 @@ local ui = {
     yLockBtn = nil,
     yLockInput = nil,
     setYLockBtn = nil,
-    -- 狂铠按钮
     kuangkaiBtn = nil,
-    -- 预判按钮
     predictionBtn = nil,
-    -- 加载动画
     loadingScreen = nil,
     loadingImage = nil,
     loadingText = nil,
-    -- 远程控制状态显示
     remoteStatus = nil,
 }
 
@@ -192,7 +180,7 @@ local function updateCharacterRefs()
 end
 
 local function output(msg, success)
-    local prefix = current_operator and ("["..current_operator.."]") or "[系统]"
+    local prefix = "[系统]"
     local text = prefix .. ": " .. msg .. (success and " ✔" or "")
     if print then print(text) end
     local success, err = pcall(function()
@@ -287,28 +275,24 @@ local function togglePrediction(state)
     updateUI()
 end
 
--- ========== 授权管理（支持编号）==========
-
--- 获取在线玩家列表（更新lastPlayerList）
+-- ========== 获取在线玩家列表 ==========
 local function updatePlayerList()
     local playersList = players:GetPlayers()
     lastPlayerList = {}
     for i, p in ipairs(playersList) do
-        if p ~= player then  -- 不包括自己
+        if p ~= player then
             table.insert(lastPlayerList, p.Name)
         end
     end
     return lastPlayerList
 end
 
--- 根据编号获取玩家名（自动刷新列表）
 local function getPlayerNameByIndex(index)
-    updatePlayerList()  -- 确保列表是最新的
+    updatePlayerList()
     if index < 1 or index > #lastPlayerList then return nil end
     return lastPlayerList[index]
 end
 
--- 根据玩家名获取编号
 local function getPlayerIndexByName(playerName)
     updatePlayerList()
     for i, name in ipairs(lastPlayerList) do
@@ -319,258 +303,26 @@ local function getPlayerIndexByName(playerName)
     return nil
 end
 
--- 授权指定玩家可以远程控制（支持编号或玩家名）
-local function authorizeRemoteUser(input)
-    local targetPlayer = nil
-    local targetName = nil
-    
-    -- 检查是否是数字编号
-    local index = tonumber(input)
-    if index then
-        targetName = getPlayerNameByIndex(index)
-        if targetName then
-            targetPlayer = players:FindFirstChild(targetName)
-        else
-            output("无效的玩家编号: " .. index, false)
-            return false
+-- ========== 发送消息 ==========
+local function sendChatMessage(message, channel)
+    channel = channel or "All"
+    local TextChatService = game:GetService("TextChatService")
+    if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+        local textChannel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+        if textChannel then
+            pcall(function() textChannel:SendAsync(message) end)
         end
     else
-        -- 直接使用玩家名
-        targetPlayer = players:FindFirstChild(input)
-        targetName = input
-    end
-    
-    if targetPlayer then
-        authorized_remote_users[targetPlayer.Name] = true
-        output("✅ 已授权玩家 " .. targetPlayer.Name .. " (编号 " .. (getPlayerIndexByName(targetPlayer.Name) or "?") .. ") 可以远程控制", true)
-        -- 向被授权玩家发送通知
-        sendChatMessageToPlayer(targetPlayer, "您已被授权可以远程控制GUS！输入 .help 查看可用命令")
-        return true
-    else
-        output("❌ 玩家 " .. targetName .. " 不在线", false)
-        return false
-    end
-end
-
--- 取消授权指定玩家（支持编号或玩家名）
-local function deauthorizeRemoteUser(input)
-    local targetPlayer = nil
-    local targetName = nil
-    
-    -- 检查是否是数字编号
-    local index = tonumber(input)
-    if index then
-        targetName = getPlayerNameByIndex(index)
-        if targetName then
-            targetPlayer = players:FindFirstChild(targetName)
-        else
-            output("无效的玩家编号: " .. index, false)
-            return false
-        end
-    else
-        -- 直接使用玩家名
-        targetPlayer = players:FindFirstChild(input)
-        targetName = input
-    end
-    
-    if targetPlayer then
-        if authorized_remote_users[targetPlayer.Name] then
-            authorized_remote_users[targetPlayer.Name] = nil
-            output("✅ 已取消授权玩家 " .. targetPlayer.Name .. " (编号 " .. (getPlayerIndexByName(targetPlayer.Name) or "?") .. ") 的远程控制权限", true)
-            -- 向被取消授权玩家发送通知
-            sendChatMessageToPlayer(targetPlayer, "您的GUS远程控制权限已被取消")
-            return true
-        else
-            output("玩家 " .. targetPlayer.Name .. " 没有被授权", false)
-            return false
-        end
-    else
-        output("❌ 玩家 " .. targetName .. " 不在线", false)
-        return false
-    end
-end
-
--- 列出所有已授权的玩家（显示编号和名字）
-local function listAuthorizedUsers()
-    updatePlayerList()
-    local list = {}
-    local count = 0
-    for name, _ in pairs(authorized_remote_users) do
-        local index = getPlayerIndexByName(name)
-        if index then
-            table.insert(list, index .. ":" .. name)
-        else
-            table.insert(list, "离线:" .. name)
-        end
-        count = count + 1
-    end
-    if count > 0 then
-        output("📋 已授权远程控制玩家 (" .. count .. "人): " .. table.concat(list, ", "), true)
-    else
-        output("📋 当前没有已授权的远程控制玩家", true)
-    end
-end
-
--- 检查玩家是否被授权
-local function isUserAuthorized(playerWhoChatted)
-    -- 如果远程控制未启用，不允许
-    if not remote_control_enabled then return false end
-    
-    -- 检查玩家是否在授权列表中
-    if authorized_remote_users[playerWhoChatted.Name] then
-        return true
-    end
-    
-    -- 检查是否是默认用户
-    if playerWhoChatted.Name == DEFAULT_USER then
-        return true
-    end
-    
-    return false
-end
-
--- ========== 远程控制监听 ==========
--- 这个函数会在其他玩家发送聊天消息时被调用
-local function onPlayerChatted(playerWhoChatted, message)
-    -- 如果远程控制未启用，直接返回
-    if not remote_control_enabled then return end
-    
-    -- 忽略自己的消息（避免循环）
-    if playerWhoChatted == player then return end
-    
-    -- 检查玩家是否被授权
-    if not isUserAuthorized(playerWhoChatted) then
-        -- 如果不是授权玩家，忽略消息
-        return
-    end
-    
-    -- 解析消息
-    message = message:gsub("^%s+", ""):gsub("%s+$", "")
-    
-    -- 检查是否需要密码验证
-    if remote_control_password ~= "" then
-        -- 如果消息以密码开头，则移除密码部分
-        if message:sub(1, #remote_control_password) == remote_control_password then
-            message = message:sub(#remote_control_password + 1):gsub("^%s+", "")
-        else
-            return  -- 密码不匹配，忽略
-        end
-    end
-    
-    -- 检查是否以"."开头（命令格式）
-    if message:sub(1,1) == "." then
-        -- 记录是谁发送的命令
-        local cmdPlayer = playerWhoChatted.Name
-        
-        -- 解析命令
-        local dotcmd, arg = message:match("^%.([^%s]+)%s*(.*)$")
-        if not dotcmd then
-            dotcmd = message:match("^%.([^%s]+)$")
-            arg = ""
-        end
-        
-        if not dotcmd then return end
-        dotcmd = dotcmd:lower()
-        
-        -- 处理特殊命令：.f 11 格式
-        if dotcmd == "f" then
-            if arg and arg ~= "" then
-                local index = tonumber(arg)
-                if index then
-                    updatePlayerList()
-                    local targetName = getPlayerNameByIndex(index)
-                    if targetName then
-                        output("收到来自 " .. cmdPlayer .. " 的远程命令: 跟随玩家 " .. targetName .. " (编号 " .. index .. ")", true)
-                        startFollow(targetName)
-                    else
-                        output("远程命令失败: 无效的玩家编号 " .. index, false)
-                    end
-                else
-                    output("收到来自 " .. cmdPlayer .. " 的远程命令: 跟随玩家 " .. arg, true)
-                    startFollow(arg)
-                end
-            else
-                output("收到来自 " .. cmdPlayer .. " 的远程命令: 跟随最近玩家", true)
-                followNearest()
+        local sayRequest = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+        if sayRequest then
+            sayRequest = sayRequest:FindFirstChild("SayMessageRequest")
+            if sayRequest then
+                pcall(function() sayRequest:FireServer(message, channel) end)
             end
-        elseif dotcmd == "t" then
-            if arg and arg ~= "" then
-                local index = tonumber(arg)
-                if index then
-                    updatePlayerList()
-                    local targetName = getPlayerNameByIndex(index)
-                    if targetName then
-                        output("收到来自 " .. cmdPlayer .. " 的远程命令: 传送到玩家 " .. targetName .. " (编号 " .. index .. ")", true)
-                        teleportToPlayer(targetName, character.smooth_follow)
-                    else
-                        output("远程命令失败: 无效的玩家编号 " .. index, false)
-                    end
-                else
-                    output("收到来自 " .. cmdPlayer .. " 的远程命令: 传送到玩家 " .. arg, true)
-                    teleportToPlayer(arg, character.smooth_follow)
-                end
-            else
-                local nearest = getNearestPlayerName()
-                if nearest then
-                    output("收到来自 " .. cmdPlayer .. " 的远程命令: 传送到最近玩家", true)
-                    teleportToPlayer(nearest, character.smooth_follow)
-                end
-            end
-        elseif dotcmd == "w" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 切换穿墙", true)
-            setImmunity(not character.immunity)
-        elseif dotcmd == "j" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 切换无限跳跃", true)
-            toggleInfiniteJump()
-        elseif dotcmd == "s" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 速度+", true)
-            adjustSpeed()
-        elseif dotcmd == "r" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 重置角色", true)
-            resetCharacter()
-        elseif dotcmd == "b" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 切换格挡循环", true)
-            toggleBlock()
-        elseif dotcmd == "m1" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 切换M1循环", true)
-            toggleM1Loop()
-        elseif dotcmd == "m2" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 切换M2循环", true)
-            toggleM2Loop()
-        elseif dotcmd == "c" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 组合开关", true)
-            local any_on = character.block_enabled or character.m1_enabled or character.m2_enabled
-            if any_on then
-                if character.block_enabled then toggleBlock(false) end
-                if character.m1_enabled then toggleM1Loop(false) end
-                if character.m2_enabled then toggleM2Loop(false) end
-                output("所有攻击循环已关闭", true)
-            else
-                if not character.block_enabled then toggleBlock(true) end
-                if not character.m1_enabled then toggleM1Loop(true) end
-                if not character.m2_enabled then toggleM2Loop(true) end
-                output("所有攻击循环已开启", true)
-            end
-        elseif dotcmd == "as" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 切换自动自杀", true)
-            toggleAutoSuicide()
-        elseif dotcmd == "fl" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 切换悬浮", true)
-            setFloating(not character.floating)
-        elseif dotcmd == "pred" or dotcmd == "预判" then
-            output("收到来自 " .. cmdPlayer .. " 的远程命令: 切换预判", true)
-            togglePrediction()
-        elseif dotcmd == "help" or dotcmd == "h" then
-            sendChatMessageToPlayer(playerWhoChatted, "可用远程命令: .f 跟随, .t 传送, .w 穿墙, .j 无限跳, .s 速度+, .r 重置, .b 格挡, .m1 M1, .m2 M2, .c 组合, .as 自杀, .fl 悬浮, .pred 预判")
-        else
-            output("收到未知远程命令: " .. dotcmd .. " 来自 " .. cmdPlayer, false)
         end
-        
-        updateUI()
     end
 end
 
--- 向指定玩家发送聊天消息（用于回复）
 local function sendChatMessageToPlayer(targetPlayer, message)
     sendChatMessage("@" .. targetPlayer.Name .. " " .. message, "All")
 end
@@ -661,28 +413,6 @@ local function showLoadingScreen()
     end
 end
 
--- ========== 发送消息 ==========
-local function sendChatMessage(message, channel)
-    channel = channel or "All"
-    local success = false
-
-    local TextChatService = game:GetService("TextChatService")
-    if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-        local textChannel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
-        if textChannel then
-            pcall(function() textChannel:SendAsync(message) end)
-        end
-    else
-        local sayRequest = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
-        if sayRequest then
-            sayRequest = sayRequest:FindFirstChild("SayMessageRequest")
-            if sayRequest then
-                pcall(function() sayRequest:FireServer(message, channel) end)
-            end
-        end
-    end
-end
-
 -- ========== 无限跳跃 ==========
 local function toggleInfiniteJump()
     character.infinite_jump = not character.infinite_jump
@@ -704,53 +434,110 @@ local function toggleInfiniteJump()
     updateUI()
 end
 
--- ========== 穿墙 ==========
+-- ========== 穿墙（修复版 - 永久生效，永不打断）==========
 local function maintainImmunity()
     if not character.immunity then return end
+    
     local char = getCharacter()
     if not char then return end
-    for _, part in ipairs(char:GetDescendants()) do
+    
+    local parts = char:GetDescendants()
+    for _, part in ipairs(parts) do
         if part:IsA("BasePart") then
             part.CanCollide = false
             part.Transparency = 0.5
         end
     end
-    if character.humanoid then
-        character.humanoid.CollisionType = Enum.HumanoidCollisionType.False
+    
+    local rootPart = char:FindFirstChild("HumanoidRootPart")
+    if rootPart then
+        character.rootPart = rootPart
+        rootPart.CanCollide = false
+        rootPart.Transparency = 0.5
+    end
+end
+
+local function applyImmunityToAllParts()
+    local char = getCharacter()
+    if not char then return end
+    
+    local parts = char:GetDescendants()
+    for _, part in ipairs(parts) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+            part.Transparency = 0.5
+        end
+    end
+    
+    local rootPart = char:FindFirstChild("HumanoidRootPart")
+    if rootPart then
+        character.rootPart = rootPart
+        rootPart.CanCollide = false
+        rootPart.Transparency = 0.5
+    end
+end
+
+local function restorePartsCollision()
+    local char = getCharacter()
+    if not char then return end
+    
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = true
+            part.Transparency = 0
+        end
+    end
+    
+    local rootPart = char:FindFirstChild("HumanoidRootPart")
+    if rootPart then
+        character.rootPart = rootPart
+        rootPart.CanCollide = true
+        rootPart.Transparency = 0
+    end
+end
+
+local function onCharacterAddedForImmunity(newChar)
+    if character.immunity then
+        task.wait(0.3)
+        applyImmunityToAllParts()
+        
+        if not immunityMaintainConnection then
+            immunityMaintainConnection = runService.Heartbeat:Connect(maintainImmunity)
+        end
     end
 end
 
 local function setImmunity(enabled)
-    updateCharacterRefs()
-    if not character.rootPart then output("无法获取角色部件", false) return end
-    local char = getCharacter()
-    if not char then output("无法获取角色", false) return end
-
     if enabled then
-        maintainImmunity()
-        if immunityMaintainConnection then
-            immunityMaintainConnection:Disconnect()
+        if character.immunity then
+            if immunityMaintainConnection then
+                immunityMaintainConnection:Disconnect()
+                immunityMaintainConnection = nil
+            end
         end
+        
+        applyImmunityToAllParts()
         immunityMaintainConnection = runService.Heartbeat:Connect(maintainImmunity)
-        output("穿墙开启", true)
+        
+        if not character.characterAddedConnection then
+            character.characterAddedConnection = player.CharacterAdded:Connect(onCharacterAddedForImmunity)
+        end
+        
+        character.immunity = true
+        character.wallHackActive = true
+        output("穿墙开启（永久生效，永不打断）", true)
     else
         if immunityMaintainConnection then
             immunityMaintainConnection:Disconnect()
             immunityMaintainConnection = nil
         end
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = true
-                part.Transparency = 0
-            end
-        end
-        if character.humanoid then
-            character.humanoid.CollisionType = Enum.HumanoidCollisionType.Box
-        end
+        
+        restorePartsCollision()
+        
+        character.immunity = false
+        character.wallHackActive = false
         output("穿墙关闭", true)
     end
-    character.immunity = enabled
-    character.wallHackActive = enabled
     updateUI()
 end
 
@@ -978,7 +765,11 @@ local function resetCharacter()
         if character.humanoid then character.humanoid.WalkSpeed = 16 end
         if character.floating then setFloating(false) end
         if character.follow_target then stopFollow() end
-        if character.immunity then setImmunity(false) end
+        -- 不关闭穿墙，保持穿墙状态，重生后重新应用
+        if character.immunity then
+            task.wait(0.2)
+            applyImmunityToAllParts()
+        end
         if character.spin_enabled then toggleSpin(false) end
         if character.hitbox_enabled then toggleHitbox(false) end
         if character.infinite_jump then toggleInfiniteJump() end
@@ -1001,7 +792,7 @@ local function resetCharacter()
         end
         hitboxImmunePlayers = {}
         character = {
-            immunity = false,
+            immunity = character.immunity,  -- 保留穿墙状态
             damage_immunity = false,
             attacking = false,
             moving = false,
@@ -1013,7 +804,8 @@ local function resetCharacter()
             floatBody = nil,
             lastHealth = character.humanoid and character.humanoid.Health or nil,
             smooth_follow = true,
-            wallHackActive = false,
+            wallHackActive = character.wallHackActive,
+            characterAddedConnection = character.characterAddedConnection,  -- 保留监听器
             spin_enabled = false,
             spin_speed = 100,
             spin_angularVelocity = nil,
@@ -1564,7 +1356,7 @@ local function setYLockValue(value)
     updateUI()
 end
 
--- ========== 狂铠 ==========
+-- ========== 狂铠（自在极意） ==========
 local function toggleKuangkai(state)
     if state == nil then
         character.kuangkai_enabled = not character.kuangkai_enabled
@@ -1613,7 +1405,7 @@ local function toggleKuangkai(state)
                 updateCharacterRefs()
                 if not character.rootPart then
                     task.wait(0.5)
-                    continue
+                    goto continue
                 end
 
                 local targetPos = targetPart.Position
@@ -1647,6 +1439,7 @@ local function toggleKuangkai(state)
                     angle = angle - 2 * math.pi
                 end
 
+                ::continue::
                 task.wait(0.05)
             end
 
@@ -1781,17 +1574,8 @@ local function updateUI()
             for _,_ in pairs(damageImmunityList) do immune_count = immune_count + 1 end
             local immune_text = "免伤:" .. immune_count .. "人"
             
-            local authorized_count = 0
-            for _,_ in pairs(authorized_remote_users) do authorized_count = authorized_count + 1 end
-            
-            local remote_status = remote_control_enabled and ("远程控制:开启 授权:" .. authorized_count .. "人") or "远程控制:关闭"
-            if remote_control_password ~= "" then
-                remote_status = remote_status .. " 需密码"
-            end
-            
             local status = 
                 "穿墙:" .. (character.immunity and "ON" or "OFF") .. " " .. immune_text .. "\n" ..
-                remote_status .. "\n" ..
                 "悬浮:" .. (character.floating and "ON" or "OFF") .. "\n" ..
                 "格挡循环:" .. (character.block_enabled and "ON" or "OFF") .. "  (破碎暂停 "..character.block_cooldown.."s)\n" ..
                 "M1循环:" .. (character.m1_enabled and "ON" or "OFF") .. "  M2循环:" .. (character.m2_enabled and "ON" or "OFF") .. "\n" ..
@@ -1811,7 +1595,7 @@ local function updateUI()
             ui.statusText.Text = status
         end
         if ui.operatorText and ui.operatorText.Parent then
-            ui.operatorText.Text = "操作者: " .. (current_operator or "无")
+            ui.operatorText.Text = "操作者: 本地"
         end
         local btnUpdates = {
             {ui.immunityBtn, character.immunity and "穿墙开" or "穿墙关"},
@@ -1878,7 +1662,7 @@ local function createUI()
     backgroundImage.Size = UDim2.new(1, 0, 1, 0)
     backgroundImage.Position = UDim2.new(0, 0, 0, 0)
     backgroundImage.BackgroundTransparency = 1
-    backgroundImage.Image = "rbxassetid:// 91273286768858"
+    backgroundImage.Image = "rbxassetid://136832107950374"
     backgroundImage.ScaleType = Enum.ScaleType.Crop
     backgroundImage.ImageTransparency = 0.2
     backgroundImage.Parent = mainFrame
@@ -2719,7 +2503,7 @@ local function createMenuButton()
     menuBtn.BackgroundTransparency = 1
     menuBtn.BorderSizePixel = 2
     menuBtn.BorderColor3 = Color3.new(0, 1, 0)
-    menuBtn.Image = "rbxassetid:// 91273286768858"
+    menuBtn.Image = "rbxassetid://136832107950374"
     menuBtn.ImageColor3 = Color3.new(1, 1, 1)
     menuBtn.ImageTransparency = 0
     menuBtn.ScaleType = Enum.ScaleType.Crop
@@ -2758,9 +2542,8 @@ local function executeCommand(cmd)
     if not bot_active then
         if cmd == PASSWORD then
             bot_active = true
-            current_operator = DEFAULT_USER
+            current_operator = "本地"
             output("GUS在线", true)
-            output("用户 "..DEFAULT_USER.." 已自动授权", true)
             output("输入 '.l' 查看指令", true)
             sendChatMessage("qdsdz杀戮开启！！！，由：etern_ncz(concealed)制作👁️", "All")
             updateUI()
@@ -2864,7 +2647,7 @@ local function executeCommand(cmd)
                     output("玩家 " .. targetName .. " 不在线", false)
                 end
             else
-                output("用法: .永恒庇护 <玩家编号>", false)
+                output("用法: .免疫 <玩家编号>", false)
             end
         elseif dotcmd == "bcd" then
             if arg and arg ~= "" then
@@ -2888,55 +2671,8 @@ local function executeCommand(cmd)
             end
         elseif dotcmd == "自在极意" or dotcmd == "kuangkai" then
             toggleKuangkai()
-        elseif dotcmd == "acc" then
-            if arg ~= "" then 
-                authorized_users[arg] = true
-                current_operator = arg
-                output("用户 "..arg.." 已授权", true)
-                updateUI()
-            else 
-                output("用法: .acc <用户名>", false) 
-            end
-        elseif dotcmd == "sv" then
-            if arg == "= immune" then 
-                setImmunity(true)
-            elseif arg ~= "" then 
-                output("用户 "..arg.." 获得免疫", true)
-            else 
-                output("用法: .sv = immune 或 .sv <用户名>", false) 
-            end
         elseif dotcmd == "players" or dotcmd == "list" then
             refreshPlayerList()
-        elseif dotcmd == "control" then
-            if arg ~= "" then
-                local targetPlayer = players:FindFirstChild(arg)
-                if targetPlayer then 
-                    authorized_users[arg] = true
-                    current_operator = arg
-                    output("控制者已设为 "..arg, true)
-                    updateUI()
-                else 
-                    output("玩家 "..arg.." 不在线", false) 
-                end
-            else 
-                output("用法: .control <玩家名>", false) 
-            end
-        elseif dotcmd == "授权" or dotcmd == "auth" then
-            if arg and arg ~= "" then
-                authorizeRemoteUser(arg)
-            else
-                output("用法: .授权 <玩家名/编号> 或 .auth <玩家名/编号>", false)
-                output("例如: .授权 3  (授权编号3的玩家)", true)
-                output("例如: .auth 张三  (授权玩家张三)", true)
-            end
-        elseif dotcmd == "取消授权" or dotcmd == "deauth" then
-            if arg and arg ~= "" then
-                deauthorizeRemoteUser(arg)
-            else
-                output("用法: .取消授权 <玩家名/编号> 或 .deauth <玩家名/编号>", false)
-            end
-        elseif dotcmd == "授权列表" or dotcmd == "authlist" then
-            listAuthorizedUsers()
         elseif dotcmd == "y" then
             if arg and arg ~= "" then
                 setCharacterHeight(arg)
@@ -2966,7 +2702,6 @@ local function executeCommand(cmd)
             toggleFollowMode()
         elseif dotcmd == "di" or dotcmd == "dmg" then
             if arg == "" or arg == "me" then 
-                -- 移除自我免疫
                 output("自我免疫功能已移除", false)
             elseif arg == "list" then
                 local list = {}
@@ -3030,8 +2765,7 @@ local function executeCommand(cmd)
         adjustSpeed()
     elseif lcmd == "列表" or lcmd == "list" then
         output("单字母命令: .w .j .s .r .l .p .f .t .b .m1 .m2 .c .as .pred", true)
-        output("其他命令: .tp .fl .follow .mode .di .spin .hitbox .teamcheck .fling .suck .view .aim .bcd .免疫 .fh .yl .ylock .自在极意 .授权", true)
-        output("授权命令: .授权 <玩家名/编号>  .取消授权 <玩家名/编号>  .授权列表", true)
+        output("其他命令: .tp .fl .follow .mode .di .spin .hitbox .teamcheck .fling .suck .view .aim .bcd .免疫 .fh .yl .ylock .自在极意", true)
     else 
         output("未知指令", false) 
     end
@@ -3046,21 +2780,6 @@ local function run()
     createUI()
     createMenuButton()
 
-    players.PlayerAdded:Connect(function(newPlayer)
-        newPlayer.Chatted:Connect(function(message)
-            onPlayerChatted(newPlayer, message)
-        end)
-        updatePlayerList()
-    end)
-
-    for _, existingPlayer in ipairs(players:GetPlayers()) do
-        if existingPlayer ~= player then
-            existingPlayer.Chatted:Connect(function(message)
-                onPlayerChatted(existingPlayer, message)
-            end)
-        end
-    end
-    
     players.PlayerRemoving:Connect(function()
         updatePlayerList()
     end)
@@ -3107,7 +2826,6 @@ local function run()
 
     player.Chatted:Connect(executeCommand)
     output("脚本已加载，输入密码 'qdsdz' 激活", true)
-    output("授权命令: .授权 <玩家名/编号>  - 授权指定玩家可以远程控制", true)
     output("新功能: .pred 预判开启/关闭 | .自在极意 环绕目标", true)
 end
 
