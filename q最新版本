@@ -1,0 +1,197 @@
+-- Roblox qdsdz 机器人
+-- 功能：穿墙、伤害免疫、悬浮、旋转、范围、传送甩飞、无限跳跃、跟随间隔、头顶高度跟随（可调）
+--       格挡循环（不受伤害影响）、M1循环、M2循环、自动自杀（血量≤5时重生）
+--       手动自杀按钮（立即重置角色）
+--       跟随时自动发送狩猎消息：👹狩猎 玩家名 ！！！
+--       免疫指令：.免疫 <编号>，使目标免疫hitbox范围伤害（一次性，退出后失效）
+-- 指令系统：支持单字母快捷命令，组合开关 .c 和自动自杀 .as
+-- 新增功能：.自在极意 开启上帝视角环绕目标，角色在14和20单位之间循环传送，镜头固定在目标周围（不会飞上天）
+-- 新增功能：预判功能 - 根据目标移动方向自动预判位置
+-- 自定义UI背景：添加图片 ID: 136832107950374
+-- 自定义菜单按钮：纯图片，无文字
+-- 加载动画：添加图片 ID: 127495408038944 并显示"欢迎使用"（修复版）
+-- 修复穿墙功能：永久生效，永不打断，死亡重生后自动恢复
+-- 已删除：所有远程控制授权功能
+
+local PASSWORD = "qdsdz"
+local bot_active = false
+local current_operator = nil
+
+-- 常量
+local MIN_HEIGHT = -500
+local MAX_HEIGHT = 5000
+local GRAVITY = 196.2
+
+-- 角色状态
+local character = {
+    immunity = false,
+    damage_immunity = false,
+    attacking = false,
+    moving = false,
+    floating = false,
+    follow_target = nil,
+    speed = 100,
+    humanoid = nil,
+    rootPart = nil,
+    floatBody = nil,
+    lastHealth = nil,
+    smooth_follow = true,
+    wallHackActive = false,
+    characterAddedConnection = nil,  -- 角色重生监听器引用
+    -- 旋转
+    spin_enabled = false,
+    spin_speed = 100,
+    spin_angularVelocity = nil,
+    -- 范围
+    hitbox_enabled = false,
+    hitbox_size = 15,
+    hitbox_transparency = 0.9,
+    hitbox_teamCheck = false,
+    hitbox_color = BrickColor.new("Really red"),
+    hitbox_colorName = "Really red",
+    hitbox_connection = nil,
+    -- 传送与甩飞
+    selected_target = nil,
+    loop_teleport_to = false,
+    loop_teleport_from = false,
+    loop_suck_all = false,
+    loop_fling = false,
+    aimbot = false,
+    viewing = false,
+    -- 无限跳跃、跟随间隔、头顶高度
+    infinite_jump = false,
+    follow_interval = 0.1,
+    follow_height_offset = 10,
+    -- 格挡和攻击循环
+    block_enabled = false,
+    m1_enabled = false,
+    m2_enabled = false,
+    block_cooldown = 2,
+    -- 自动自杀
+    auto_suicide = false,
+    -- Y锁定
+    y_lock_enabled = false,
+    y_lock_value = 300,
+    -- 狂铠旋转
+    kuangkai_enabled = false,
+    kuangkai_thread = nil,
+    -- 预判功能
+    prediction_enabled = false,
+    target_velocity = Vector3.new(0, 0, 0),
+    target_last_pos = nil,
+    target_last_time = nil,
+}
+
+local damageImmunityList = {}
+local hitboxImmunePlayers = {}
+local followLoop = nil
+local lastPlayerList = {}
+local heartbeatConnection = nil
+local jumpConnection = nil
+local immunityMaintainConnection = nil  -- 穿墙维护连接
+local blockLoop = nil
+local m1Loop = nil
+local m2Loop = nil
+
+getgenv().OldPos = CFrame.new()
+getgenv().FPDH = workspace.FallenPartsDestroyHeight
+
+-- UI 引用
+local ui = {
+    screenGui = nil,
+    mainFrame = nil,
+    scrollFrame = nil,
+    menuButton = nil,
+    statusText = nil,
+    operatorText = nil,
+    immunityBtn = nil,
+    floatBtn = nil,
+    tpInput = nil,
+    tpBtn = nil,
+    followBtn = nil,
+    damageOtherBtn = nil,
+    smoothFollowBtn = nil,
+    heightInput = nil,
+    heightSetBtn = nil,
+    heightUpBtn = nil,
+    heightDownBtn = nil,
+    spinBtn = nil,
+    hitboxBtn = nil,
+    teamCheckBtn = nil,
+    targetInput = nil,
+    refreshBtn = nil,
+    teleportToBtn = nil,
+    loopToBtn = nil,
+    teleportFromBtn = nil,
+    suckAllBtn = nil,
+    viewBtn = nil,
+    flingOnceBtn = nil,
+    loopFlingBtn = nil,
+    aimbotBtn = nil,
+    infiniteJumpBtn = nil,
+    intervalInput = nil,
+    setIntervalBtn = nil,
+    blockBtn = nil,
+    m1Btn = nil,
+    m2Btn = nil,
+    blockCdInput = nil,
+    setBlockCdBtn = nil,
+    comboBtn = nil,
+    autoSuicideBtn = nil,
+    manualSuicideBtn = nil,
+    fhInput = nil,
+    setFhBtn = nil,
+    yLockBtn = nil,
+    yLockInput = nil,
+    setYLockBtn = nil,
+    kuangkaiBtn = nil,
+    predictionBtn = nil,
+    loadingScreen = nil,
+    loadingImage = nil,
+    loadingText = nil,
+    remoteStatus = nil,
+}
+
+local player = game:GetService("Players").LocalPlayer
+local players = game:GetService("Players")
+local runService = game:GetService("RunService")
+local userInputService = game:GetService("UserInputService")
+local tweenService = game:GetService("TweenService")
+
+-- ========== 工具函数 ==========
+local function getCharacter()
+    return player.Character
+end
+
+local function updateCharacterRefs()
+    local success, err = pcall(function()
+        local char = getCharacter()
+        if char then
+            character.humanoid = char:FindFirstChildOfClass("Humanoid")
+            character.rootPart = char:FindFirstChild("HumanoidRootPart")
+            if character.humanoid and not character.lastHealth then
+                character.lastHealth = character.humanoid.Health
+            end
+        end
+    end)
+    if not success then
+        warn("更新角色引用失败:", err)
+    end
+end
+
+local function output(msg, success)
+    local prefix = "[系统]"
+    local text = prefix .. ": " .. msg .. (success and " ✔" or "")
+    if print then print(text) end
+    local success, err = pcall(function()
+        local char = getCharacter()
+        if char and char:FindFirstChild("Head") then
+            game:GetService("Chat"):Chat(char.Head, text)
+        end
+    end)
+    if not success then
+        warn("发送聊天消息失败:", err)
+    end
+end
+
+local function notify(title, text
